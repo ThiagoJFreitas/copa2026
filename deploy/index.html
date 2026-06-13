@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<!--
+  Wrapper para publicar o app Streamlit em hawkdynamics.com.br/copa
+  numa HOSPEDAGEM COMPARTILHADA (que não roda Streamlit diretamente).
+
+  COMO USAR:
+  1) Publique o app num serviço gratuito de Streamlit e copie a URL pública:
+       - Streamlit Community Cloud  -> https://SEU-APP.streamlit.app
+       - ou Hugging Face Spaces     -> https://SEU-USUARIO-copa.hf.space
+  2) Troque a URL na variável APP_URL abaixo (mantenha o ?embed=true).
+  3) Envie ESTE arquivo (index.html) para a pasta public_html/copa no cPanel.
+  4) Acesse hawkdynamics.com.br/copa  -> o app aparece embutido no seu domínio.
+-->
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Copa do Mundo 2026 — Previsão da Fase de Grupos</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #0e1117; }
+    iframe { border: 0; width: 100%; height: 100vh; display: block; }
+  </style>
+</head>
+<body>
+  <script>
+    // >>> TROQUE pela URL pública do seu app (mantenha o ?embed=true) <<<
+    const APP_URL = "https://SEU-APP.streamlit.app/?embed=true";
+    document.write(
+      '<iframe src="' + APP_URL +
+      '" allow="clipboard-write; fullscreen" loading="eager"></iframe>'
+    );
+  </script>
+  <noscript>
+    Ative o JavaScript ou acesse o app diretamente:
+    <a href="https://SEU-APP.streamlit.app">abrir aplicativo</a>.
+  </noscript>
+</body>
+</html>

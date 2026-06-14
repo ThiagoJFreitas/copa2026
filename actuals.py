@@ -95,6 +95,35 @@ def get_actual(index: dict, home: str, away: str):
     return entry["as"], entry["hs"]
 
 
+def real_standings(index: dict, group_matches) -> dict:
+    """Classificação REAL do grupo a partir dos jogos já disputados.
+
+    `group_matches`: lista de (mandante, visitante). Retorna {time: stats} com
+    P, V, E, D, GP, GC, SG, Pts. Times sem jogos ficam zerados.
+    """
+    teams = sorted({t for m in group_matches for t in m})
+    stats = {t: {"P": 0, "V": 0, "E": 0, "D": 0, "GP": 0, "GC": 0} for t in teams}
+    for home, away in group_matches:
+        act = get_actual(index, home, away)
+        if act is None:
+            continue
+        hs, as_ = act
+        sh, sa = stats[home], stats[away]
+        sh["P"] += 1; sa["P"] += 1
+        sh["GP"] += hs; sh["GC"] += as_
+        sa["GP"] += as_; sa["GC"] += hs
+        if hs > as_:
+            sh["V"] += 1; sa["D"] += 1
+        elif hs < as_:
+            sa["V"] += 1; sh["D"] += 1
+        else:
+            sh["E"] += 1; sa["E"] += 1
+    for s in stats.values():
+        s["SG"] = s["GP"] - s["GC"]
+        s["Pts"] = s["V"] * 3 + s["E"]
+    return stats
+
+
 def source_summary(index: dict) -> dict:
     """Conta quantos resultados vieram de cada fonte."""
     counts = {}

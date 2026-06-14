@@ -326,6 +326,27 @@ for tab, g in zip(tabs[1:], fixtures.GROUPS):
             })
             st.caption("Top 2 avançam. % = probabilidade de classificação (Monte Carlo).")
 
+            # --- Classificação REAL (jogos já disputados) ---
+            st.markdown(f"##### Classificação atual — Grupo {g}")
+            gm = [(h, a) for (_, h, a, _) in fixtures.matches_for_group(g)]
+            rstats = actuals.real_standings(index, gm)
+            if sum(s["P"] for s in rstats.values()) == 0:
+                st.caption("Nenhum jogo disputado ainda neste grupo.")
+            else:
+                rrows = [{
+                    " ": display.flag_url(team),
+                    "Seleção": display.pt(team),
+                    "P": s["P"], "V": s["V"], "E": s["E"], "D": s["D"],
+                    "GP": s["GP"], "GC": s["GC"], "SG": s["SG"], "Pts": s["Pts"],
+                } for team, s in rstats.items()]
+                rdf = pd.DataFrame(rrows).sort_values(
+                    ["Pts", "SG", "GP"], ascending=False).reset_index(drop=True)
+                rdf.index = rdf.index + 1
+                st.dataframe(rdf, width="stretch", column_config={
+                    " ": st.column_config.ImageColumn("", width="small")})
+                st.caption("P=jogos · V/E/D · GP/GC=gols pró/contra · SG=saldo · Pts=pontos. "
+                           "Fonte dos resultados na aba 📊.")
+
         with col_matches:
             st.subheader("Jogos")
             for _, home, away, date in fixtures.matches_for_group(g):

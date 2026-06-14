@@ -13,11 +13,46 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
 
 from teams import to_dataset_name
+
+# Pontuação do bolão (padrão = regra do usuário):
+#   exato, vencedor+gols de um time, vencedor só, gols de um time sem vencedor,
+#   empate exato, empate sem placar exato.
+DEFAULT_BOLAO_PTS = (6, 4, 3, 1, 6, 3)
+
+
+def bolao_points(pred, real, pts=DEFAULT_BOLAO_PTS) -> int:
+    """Pontos de um palpite `pred=(i,j)` contra o resultado `real=(i,j)`."""
+    pi, pj = pred
+    ri, rj = real
+    p_exact, p_win1, p_win0, p_one, p_dexact, p_donly = pts
+    if (pi, pj) == (ri, rj):
+        return p_dexact if ri == rj else p_exact
+    if ri == rj:  # resultado real foi empate (placar diferente do meu)
+        return p_donly if pi == pj else 0  # só pontua se eu também previ empate
+    # resultado real foi decisivo (vitória de um lado)
+    same_winner = (pi > pj and ri > rj) or (pi < pj and ri < rj)
+    one_goal = (pi == ri) or (pj == rj)
+    if same_winner:
+        return p_win1 if one_goal else p_win0
+    return p_one if one_goal else 0
+
+
+@lru_cache(maxsize=8)
+def _points_tensor(pts: tuple, max_pred: int, max_goal: int) -> np.ndarray:
+    """Tensor T[pi,pj,ri,rj] = pontos do palpite (pi,pj) contra o real (ri,rj)."""
+    T = np.zeros((max_pred + 1, max_pred + 1, max_goal + 1, max_goal + 1))
+    for pi in range(max_pred + 1):
+        for pj in range(max_pred + 1):
+            for ri in range(max_goal + 1):
+                for rj in range(max_goal + 1):
+                    T[pi, pj, ri, rj] = bolao_points((pi, pj), (ri, rj), pts)
+    return T
 
 # ---------------------------------------------------------------------------
 # Pesos de importância por torneio (casamento por substring, minúsculo).
@@ -136,18 +171,13 @@ class PredictionModel:
         outcomes = {"home": p_win, "draw": p_draw, "away": p_loss}
         result = max(outcomes, key=outcomes.get)
 
-        # Placar mais provável *coerente com o resultado previsto*: restringe a
-        # matriz à região do resultado (mandante/empate/visitante) e pega o pico.
+        # Placar mais provável = argmax GLOBAL da matriz (maximiza P de acerto
+        # exato). Também os 3 placares mais prováveis com suas probabilidades.
         n = matrix.shape[0]
-        rr, cc = np.indices((n, n))
-        if result == "home":
-            mask = rr > cc
-        elif result == "away":
-            mask = rr < cc
-        else:
-            mask = rr == cc
-        masked = np.where(mask, matrix, -1.0)
-        i, j = np.unravel_index(np.argmax(masked), masked.shape)
+        flat = matrix.flatten()
+        order = flat.argsort()[::-1]
+        top_scores = [(int(o // n), int(o % n), float(flat[o])) for o in order[:3]]
+        i, j = top_scores[0][0], top_scores[0][1]
         xg_a, xg_b = self.expected_goals(a, b, neutral)
 
         return {
@@ -158,12 +188,44 @@ class PredictionModel:
             "p_loss": float(p_loss),
             "score_a": int(i),
             "score_b": int(j),
+            "top_scores": top_scores,  # [(gols_a, gols_b, prob), ...] top 3
             "xg_a": float(xg_a),
             "xg_b": float(xg_b),
             "result": result,  # 'home' | 'draw' | 'away'
             "elo_a": float(self._eff_elo(a)),
             "elo_b": float(self._eff_elo(b)),
         }
+
+    def _calibrated_matrix(self, a: str, b: str, neutral: bool) -> np.ndarray:
+        """Matriz conjunta de placares com as MARGINAIS de resultado recalibradas
+        pela mistura Elo+Poisson (melhor que só Poisson), mantendo o formato dos
+        placares dentro de cada região (V/E/D)."""
+        M = self._poisson_matrix(a, b, neutral)
+        elo = self._elo_probs(a, b, neutral)       # (V, E, D)
+        poi = self._poisson_probs(M)
+        pb = [self.w_elo * elo[k] + (1 - self.w_elo) * poi[k] for k in range(3)]
+        n = M.shape[0]
+        rr, cc = np.indices((n, n))
+        out = M.copy()
+        for mask, p in zip([rr > cc, rr == cc, rr < cc], pb):
+            s = M[mask].sum()
+            if s > 0:
+                out[mask] = M[mask] * (p / s)
+        return out
+
+    def best_points_score(self, team_a: str, team_b: str, neutral: bool = True,
+                          pts: tuple = DEFAULT_BOLAO_PTS, max_pred: int = 6):
+        """Placar que MAXIMIZA os pontos esperados na regra do bolão.
+
+        Calcula, para cada palpite, o valor esperado de pontos somando sobre toda
+        a distribuição de placares (calibrada). Retorna (i, j, pontos_esperados).
+        """
+        a, b = to_dataset_name(team_a), to_dataset_name(team_b)
+        M = self._calibrated_matrix(a, b, neutral)
+        T = _points_tensor(tuple(pts), max_pred, M.shape[0] - 1)
+        ep = np.tensordot(T, M, axes=([2, 3], [0, 1]))  # (max_pred+1, max_pred+1)
+        i, j = np.unravel_index(int(ep.argmax()), ep.shape)
+        return int(i), int(j), float(ep[i, j])
 
     # ------------------------------------------------------------------
     # Simulação de grupo (Monte Carlo sobre placares de Poisson)

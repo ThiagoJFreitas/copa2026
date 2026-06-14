@@ -31,11 +31,11 @@ st.set_page_config(page_title="Copa 2026 — Previsão da Fase de Grupos", page_
 # ---------------------------------------------------------------------------
 PRESETS = {
     "⚖️ Equilibrado": {
-        "w_elo": 0.5, "half_life": 5.0, "cutoff": 1994, "goal_scale": 1.45,
+        "w_elo": 0.5, "half_life": 5.0, "cutoff": 1994, "goal_scale": 1.30,
         "desc": "Mistura 50/50 de Elo e Poisson, ~5 anos de memória. Bom padrão geral.",
     },
     "🔥 Forma recente": {
-        "w_elo": 0.4, "half_life": 2.0, "cutoff": 2014, "goal_scale": 1.45,
+        "w_elo": 0.4, "half_life": 2.0, "cutoff": 2014, "goal_scale": 1.30,
         "desc": "Memória curta (2 anos) e só jogos desde 2014: prioriza o momento atual.",
     },
     "📜 Histórico (Elo puro)": {
@@ -137,7 +137,7 @@ with st.sidebar:
         half_life_years = st.slider("Meia-vida da recência (anos)", 1.0, 12.0, 5.0, 0.5,
                                     help="Menor = jogos recentes dominam o ataque/defesa.")
         cutoff_year = st.slider("Considerar jogos a partir de", 1950, 2020, 1994, 1)
-        goal_scale = st.slider("Nível de gols", 0.8, 2.2, 1.45, 0.05,
+        goal_scale = st.slider("Nível de gols", 0.8, 2.2, 1.30, 0.05,
                                help="Calibra quantos gols sair. ~1.45 ≈ média realista de "
                                     "Copa (2,6/jogo). Maior = placares mais elásticos.")
     else:
@@ -157,6 +157,16 @@ with st.sidebar:
         help="Cada jogo é previsto com tudo que aconteceu até a véspera dele "
              "(round 2 já 'sabe' do round 1). Desligado = previsão fixa pré-Copa.",
     )
+
+    st.divider()
+    st.subheader("🎟️ Modo bolão")
+    bolao = st.toggle("Otimizar palpite para bolão", value=False,
+                      help="Escolhe o placar que MAXIMIZA os pontos esperados na regra "
+                           "do bolão — não só o mais provável.")
+    if bolao:
+        st.caption("Regra: **6** placar exato · **4** vencedor + gols de um time · "
+                   "**3** vencedor (sem placar) · **1** gols de um time sem o vencedor · "
+                   "empate: **6** exato / **3** sem placar exato.")
 
     st.divider()
     if st.button("🔄 Atualizar resultados / histórico"):
@@ -191,6 +201,13 @@ def predict(home: str, away: str, date: str):
     return model_for(cutoff).predict_match(home, away, neutral=True)
 
 
+def bolao_pick(home: str, away: str, date: str):
+    """Placar que maximiza pontos esperados na regra do bolão. Retorna (i, j)."""
+    cutoff = pd.Timestamp(date).isoformat() if rolling else START_ISO
+    i, j, _ = model_for(cutoff).best_points_score(home, away, neutral=True)
+    return i, j
+
+
 # Simulações de grupo: em rolling projetam com tudo que já aconteceu.
 sims_cutoff = LATEST_ISO if rolling else START_ISO
 sims = get_group_sims(refresh, cutoff_year, half_life_years, w_elo, goal_scale,
@@ -223,7 +240,8 @@ with tabs[0]:
         st.caption(f"🟢 Resultados ao vivo — {parts}. Atualize com o 🔄.")
     elif src.get("martj42"):
         st.caption(f"🟡 Resultados via {parts} (martj42 pode estar atrasado alguns dias).")
-    rows, n_ok, n_exact, goal_err, prob_actual = [], 0, 0, 0.0, 0.0
+    rows, n_ok, n_exact, n_top3, goal_err, prob_actual = [], 0, 0, 0, 0.0, 0.0
+    bolao_pts = 0  # pontos que o palpite do bolão teria feito nos jogos disputados
     calib = []  # pares (prob prevista, ocorreu?) para o gráfico de calibração
     for g, home, away, date in fixtures.MATCHES:
         act = actuals.get_actual(index, home, away)
@@ -237,7 +255,14 @@ with tabs[0]:
             calib.append({"pred": p, "occ": 1 if ao == k else 0})
         hit = po == ao
         n_ok += hit
-        n_exact += (pred["score_a"], pred["score_b"]) == act
+        # palpite mostrado = bolão (se ligado) ou placar mais provável
+        pick = bolao_pick(home, away, date) if bolao else (pred["score_a"], pred["score_b"])
+        exato = pick == act
+        n_exact += exato
+        top3 = {(i, j) for i, j, _ in pred["top_scores"]}
+        in_top3 = act in top3
+        n_top3 += in_top3
+        bolao_pts += model.bolao_points(pick, act)
         goal_err += abs(pred["score_a"] - act[0]) + abs(pred["score_b"] - act[1])
         prob_actual += probs[ao]
         rows.append({
@@ -246,10 +271,12 @@ with tabs[0]:
             "Mandante": display.pt(home),
             "  ": display.flag_url(away),
             "Visitante": display.pt(away),
-            "Previsto": f"{pred['score_a']}–{pred['score_b']}",
+            "Previsto": f"{pick[0]}–{pick[1]}",
+            "Top-3": " · ".join(f"{i}-{j}" for i, j, _ in pred["top_scores"]),
             "Real": f"{act[0]}–{act[1]}",
             "P(resultado real)": probs[ao],
-            "Acerto": "✅" if hit else "❌",
+            "Resultado": "✅" if hit else "❌",
+            "No top-3": "✅" if in_top3 else "—",
         })
 
     if not rows:
@@ -258,13 +285,22 @@ with tabs[0]:
                 "conforme a Copa avança.")
     else:
         n = len(rows)
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Jogos disputados", n)
         c2.metric("Acerto do resultado", f"{n_ok}/{n}", f"{100*n_ok/n:.0f}%")
         c3.metric("Placar exato", f"{n_exact}/{n}")
-        c4.metric("Erro médio de gols", f"{goal_err/n:.2f}")
-        st.caption(f"Prob. média atribuída ao resultado que realmente ocorreu: "
-                   f"{100*prob_actual/n:.1f}% (quanto maior, mais calibrado o modelo).")
+        c4.metric("Placar no top-3", f"{n_top3}/{n}")
+        if bolao:
+            c5.metric("🎟️ Pontos no bolão", bolao_pts, f"{bolao_pts/n:.1f}/jogo")
+        else:
+            c5.metric("Erro médio de gols", f"{goal_err/n:.2f}")
+        st.caption(
+            f"Prob. média atribuída ao resultado que realmente ocorreu: "
+            f"{100*prob_actual/n:.1f}% (quanto maior, mais calibrado). "
+            "ℹ️ Acertar **placar exato** em futebol tem teto baixo (~14% mesmo para bons "
+            "modelos); por isso mostramos os 3 placares mais prováveis — o placar real cai no "
+            "**top-3 em ~36%** dos jogos (histórico). Acerto de resultado fica ~59%."
+        )
         comp = pd.DataFrame(rows)
         st.dataframe(
             comp, width="stretch", hide_index=True,
@@ -355,18 +391,26 @@ for tab, g in zip(tabs[1:], fixtures.GROUPS):
                 d_fmt = pd.to_datetime(date).strftime("%d/%m")
                 label = {"home": display.pt(home), "draw": "Empate",
                          "away": display.pt(away)}[pred["result"]]
+                if bolao:
+                    bi, bj = bolao_pick(home, away, date)
+                    pick = (f"&nbsp;→&nbsp; 🎟️ <b>{bi}–{bj}</b>")
+                else:
+                    bi, bj = pred["score_a"], pred["score_b"]
+                    pick = f"&nbsp;→&nbsp; <b>{label}</b>"
                 line = (f"{display.img(home)}<b>{display.pt(home)}</b> "
-                        f"{pred['score_a']} × {pred['score_b']} "
+                        f"{bi} × {bj} "
                         f"{display.img(away)}<b>{display.pt(away)}</b>  "
                         f"&nbsp;·&nbsp; <span style='color:#888'>{d_fmt}</span>  "
-                        f"&nbsp;→&nbsp; <b>{label}</b>")
+                        + pick)
                 if act is not None:
                     ao = actuals.outcome(*act)
                     ok = "✅" if ao == pred["result"] else "❌"
                     line += (f"  &nbsp;|&nbsp; <span style='color:#ffd54f'>real "
                              f"{act[0]}×{act[1]} {ok}</span>")
-                line += (f"<br><span style='color:#888;font-size:12px'>gols esperados "
-                         f"{pred['xg_a']:.1f} – {pred['xg_b']:.1f}</span>")
+                tops = " · ".join(f"{i}-{j} ({p*100:.0f}%)" for i, j, p in pred["top_scores"])
+                line += (f"<br><span style='color:#888;font-size:12px'>placares mais prováveis: "
+                         f"{tops} &nbsp;|&nbsp; gols esperados {pred['xg_a']:.1f}–{pred['xg_b']:.1f}"
+                         f"</span>")
                 st.markdown(line, unsafe_allow_html=True)
                 hl = actuals.outcome(*act) if act is not None else None
                 st.markdown(wdl_bar(pred["p_win"], pred["p_draw"], pred["p_loss"], hl),

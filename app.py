@@ -217,6 +217,7 @@ m = model_for(sims_cutoff)  # usado para a coluna de Elo na classificação
 # ---------------------------------------------------------------------------
 # Cabeçalho
 # ---------------------------------------------------------------------------
+st.markdown(display.TABLE_CSS, unsafe_allow_html=True)
 st.title("⚽ Copa do Mundo 2026 — Previsão da Fase de Grupos")
 st.markdown(
     f"Previsões **out-of-sample** dos 72 jogos da fase de grupos (modelo **{preset_name}**): "
@@ -266,17 +267,11 @@ with tabs[0]:
         goal_err += abs(pred["score_a"] - act[0]) + abs(pred["score_b"] - act[1])
         prob_actual += probs[ao]
         rows.append({
-            "Grupo": g,
-            " ": display.flag_url(home),
-            "Mandante": display.pt(home),
-            "  ": display.flag_url(away),
-            "Visitante": display.pt(away),
-            "Previsto": f"{pick[0]}–{pick[1]}",
-            "Top-3": " · ".join(f"{i}-{j}" for i, j, _ in pred["top_scores"]),
-            "Real": f"{act[0]}–{act[1]}",
-            "P(resultado real)": probs[ao],
-            "Resultado": "✅" if hit else "❌",
-            "No top-3": "✅" if in_top3 else "—",
+            "g": g, "home": home, "away": away,
+            "prev": f"{pick[0]}–{pick[1]}",
+            "top3": " · ".join(f"{i}-{j}" for i, j, _ in pred["top_scores"]),
+            "real": f"{act[0]}–{act[1]}",
+            "p_real": probs[ao], "ok": hit,
         })
 
     if not rows:
@@ -301,16 +296,18 @@ with tabs[0]:
             "modelos); por isso mostramos os 3 placares mais prováveis — o placar real cai no "
             "**top-3 em ~36%** dos jogos (histórico). Acerto de resultado fica ~59%."
         )
-        comp = pd.DataFrame(rows)
-        st.dataframe(
-            comp, width="stretch", hide_index=True,
-            column_config={
-                " ": st.column_config.ImageColumn("", width="small"),
-                "  ": st.column_config.ImageColumn("", width="small"),
-                "P(resultado real)": st.column_config.ProgressColumn(
-                    "P(resultado real)", min_value=0.0, max_value=1.0, format="%.0f%%"),
-            },
-        )
+        headers = [("Grp", "pos"), ("Jogo", "nm"), ("Prev", ""), ("Top-3", ""),
+                   ("Real", ""), ("✓", ""), ("P(real)", "")]
+        trs = []
+        for r in rows:
+            jogo = (f"{display.img(r['home'])}{display.pt(r['home'])} "
+                    f"<span style='color:#888'>×</span> "
+                    f"{display.img(r['away'])}{display.pt(r['away'])}")
+            cells = [(r["g"], "pos"), (jogo, "nm"), (f"<b>{r['prev']}</b>", ""),
+                     (r["top3"], ""), (r["real"], ""),
+                     ("✅" if r["ok"] else "❌", ""), (display.qbar(r["p_real"] * 100), "")]
+            trs.append((cells, ""))
+        st.markdown(display.html_table(headers, trs), unsafe_allow_html=True)
 
         # --- Gráfico de calibração (reliability diagram) ---
         st.markdown("#### Calibração do modelo")
@@ -342,25 +339,21 @@ for tab, g in zip(tabs[1:], fixtures.GROUPS):
 
         with col_table:
             st.subheader(f"Classificação projetada — Grupo {g}")
-            tbl_rows = []
-            for team, s in sims[g].items():
+            proj = sorted(sims[g].items(),
+                          key=lambda kv: (-kv[1]["qualify_pct"], -kv[1]["exp_points"]))
+            headers = [("#", "pos"), ("Seleção", "nm"), ("Elo", ""), ("Pts", ""),
+                       ("Classif.", "")]
+            trs = []
+            for rank, (team, s) in enumerate(proj, 1):
                 ds = to_dataset_name(team)
-                tbl_rows.append({
-                    " ": display.flag_url(team),
-                    "Seleção": display.pt(team),
-                    "Elo": round(m.elo.get(ds, model.ELO_BASE)),
-                    "Pts esp.": round(s["exp_points"], 1),
-                    "Classif. %": round(s["qualify_pct"] * 100, 1),
-                })
-            tbl = pd.DataFrame(tbl_rows).sort_values(
-                ["Classif. %", "Pts esp."], ascending=False).reset_index(drop=True)
-            tbl.index = tbl.index + 1
-            st.dataframe(tbl, width="stretch", column_config={
-                " ": st.column_config.ImageColumn("", width="small"),
-                "Classif. %": st.column_config.ProgressColumn(
-                    "Classif. %", min_value=0, max_value=100, format="%.1f%%"),
-            })
-            st.caption("Top 2 avançam. % = probabilidade de classificação (Monte Carlo).")
+                cells = [(str(rank), "pos"), (display.label_html(team), "nm"),
+                         (str(round(m.elo.get(ds, model.ELO_BASE))), ""),
+                         (f"{s['exp_points']:.1f}", ""),
+                         (display.qbar(s["qualify_pct"] * 100), "")]
+                trs.append((cells, "q" if rank <= 2 else ""))
+            st.markdown(display.html_table(headers, trs), unsafe_allow_html=True)
+            st.caption("Top 2 (verde) avançam · Pts = pontos esperados · "
+                       "Classif. = prob. de classificação (Monte Carlo).")
 
             # --- Classificação REAL (jogos já disputados) ---
             st.markdown(f"##### Classificação atual — Grupo {g}")
@@ -369,19 +362,19 @@ for tab, g in zip(tabs[1:], fixtures.GROUPS):
             if sum(s["P"] for s in rstats.values()) == 0:
                 st.caption("Nenhum jogo disputado ainda neste grupo.")
             else:
-                rrows = [{
-                    " ": display.flag_url(team),
-                    "Seleção": display.pt(team),
-                    "P": s["P"], "V": s["V"], "E": s["E"], "D": s["D"],
-                    "GP": s["GP"], "GC": s["GC"], "SG": s["SG"], "Pts": s["Pts"],
-                } for team, s in rstats.items()]
-                rdf = pd.DataFrame(rrows).sort_values(
-                    ["Pts", "SG", "GP"], ascending=False).reset_index(drop=True)
-                rdf.index = rdf.index + 1
-                st.dataframe(rdf, width="stretch", column_config={
-                    " ": st.column_config.ImageColumn("", width="small")})
-                st.caption("P=jogos · V/E/D · GP/GC=gols pró/contra · SG=saldo · Pts=pontos. "
-                           "Fonte dos resultados na aba 📊.")
+                cur = sorted(rstats.items(),
+                             key=lambda kv: (-kv[1]["Pts"], -kv[1]["SG"], -kv[1]["GP"]))
+                headers = [("#", "pos"), ("Seleção", "nm"), ("P", ""), ("V", ""),
+                           ("E", ""), ("D", ""), ("SG", ""), ("Pts", "")]
+                trs = []
+                for rank, (team, s) in enumerate(cur, 1):
+                    cells = [(str(rank), "pos"), (display.label_html(team), "nm"),
+                             (str(s["P"]), ""), (str(s["V"]), ""), (str(s["E"]), ""),
+                             (str(s["D"]), ""), (f"{s['SG']:+d}", ""),
+                             (f"<b>{s['Pts']}</b>", "")]
+                    trs.append((cells, "q" if rank <= 2 else ""))
+                st.markdown(display.html_table(headers, trs), unsafe_allow_html=True)
+                st.caption("P=jogos · V/E/D · SG=saldo · Pts=pontos · top 2 em verde.")
 
         with col_matches:
             st.subheader("Jogos")
@@ -389,33 +382,33 @@ for tab, g in zip(tabs[1:], fixtures.GROUPS):
                 pred = predict(home, away, date)
                 act = actuals.get_actual(index, home, away)
                 d_fmt = pd.to_datetime(date).strftime("%d/%m")
-                label = {"home": display.pt(home), "draw": "Empate",
-                         "away": display.pt(away)}[pred["result"]]
                 if bolao:
                     bi, bj = bolao_pick(home, away, date)
-                    pick = (f"&nbsp;→&nbsp; 🎟️ <b>{bi}–{bj}</b>")
+                    marker = "🎟️ "
                 else:
                     bi, bj = pred["score_a"], pred["score_b"]
-                    pick = f"&nbsp;→&nbsp; <b>{label}</b>"
-                line = (f"{display.img(home)}<b>{display.pt(home)}</b> "
-                        f"{bi} × {bj} "
-                        f"{display.img(away)}<b>{display.pt(away)}</b>  "
-                        f"&nbsp;·&nbsp; <span style='color:#888'>{d_fmt}</span>  "
-                        + pick)
+                    marker = ""
+                # vencedor implícito no placar do palpite
+                wlabel = (display.pt(home) if bi > bj else
+                          (display.pt(away) if bi < bj else "Empate"))
+                teams = (f"<div class='teams'>{display.img(home)}<b>{display.pt(home)}</b>"
+                         f"<span class='vs'>×</span>"
+                         f"{display.img(away)}<b>{display.pt(away)}</b>"
+                         f"<span style='color:#8a9099;font-size:12px'>&nbsp;· {d_fmt}</span></div>")
+                pred_row = (f"<div class='pred'><span class='lbl'>palpite</span>"
+                            f"<span class='sc'>{marker}{bi} × {bj}</span>"
+                            f"<span class='pwin'>{wlabel}</span></div>")
+                real = ""
                 if act is not None:
-                    ao = actuals.outcome(*act)
-                    ok = "✅" if ao == pred["result"] else "❌"
-                    line += (f"  &nbsp;|&nbsp; <span style='color:#ffd54f'>real "
-                             f"{act[0]}×{act[1]} {ok}</span>")
+                    ok = "✅" if actuals.outcome(*act) == actuals.outcome(bi, bj) else "❌"
+                    real = f"<span class='real'>resultado real: {act[0]} × {act[1]} {ok}</span> · "
                 tops = " · ".join(f"{i}-{j} ({p*100:.0f}%)" for i, j, p in pred["top_scores"])
-                line += (f"<br><span style='color:#888;font-size:12px'>placares mais prováveis: "
-                         f"{tops} &nbsp;|&nbsp; gols esperados {pred['xg_a']:.1f}–{pred['xg_b']:.1f}"
-                         f"</span>")
-                st.markdown(line, unsafe_allow_html=True)
                 hl = actuals.outcome(*act) if act is not None else None
-                st.markdown(wdl_bar(pred["p_win"], pred["p_draw"], pred["p_loss"], hl),
+                bar = wdl_bar(pred["p_win"], pred["p_draw"], pred["p_loss"], hl)
+                meta = (f"<div class='meta'>{real}prováveis: {tops} · gols esp. "
+                        f"{pred['xg_a']:.1f}–{pred['xg_b']:.1f}</div>")
+                st.markdown(f"<div class='match'>{teams}{pred_row}{meta}{bar}</div>",
                             unsafe_allow_html=True)
-                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
 st.caption("Histórico: martj42/international_results · Resultados ao vivo: ESPN (sem chave) "
            "com fallback martj42 · Modelo Elo + Poisson, previsões out-of-sample.")
